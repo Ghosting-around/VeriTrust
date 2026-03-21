@@ -226,6 +226,13 @@ code {
   border: 1px solid rgba(168, 85, 247, 0.3);
 }
 
+.status-badge.warning {
+  background: rgba(234, 179, 8, 0.15);
+  color: #facc15;
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  box-shadow: 0 0 10px rgba(250, 204, 21, 0.1);
+}
+
 /* ========== FORM GROUPS ========== */
 .form-group {
   margin-bottom: 1.5rem;

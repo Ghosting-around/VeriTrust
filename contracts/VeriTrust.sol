@@ -19,11 +19,12 @@ contract VeriTrust {
     // Mapping from user -> list of credentials
     mapping(address => Credential[]) public userCredentials;
     mapping(address => Institution) public institutions;
-    mapping(address => bool) public userConsent;
+    mapping(address => mapping(address => bool)) public hasConsent;
 
     event InstitutionRegistered(address indexed institutionAddress, string name);
     event CredentialIssued(address indexed recipient, address indexed institution, bytes32 hash);
-    event ConsentGranted(address indexed user);
+    event ConsentGranted(address indexed user, address indexed verifier);
+    event ConsentRevoked(address indexed user, address indexed verifier);
 
     modifier onlyAdmin() {
         require(msg.sender == admin, "Admin only");
@@ -59,22 +60,13 @@ contract VeriTrust {
     }
 
     function grantConsent(address _verifier) external {
-        // Simple global consent model or specific? 
-        // The ABI implies grantConsent(address) might be 'grant consent TO address'
-        // But the previous verified logic checked 'consent' broadly.
-        // Let's assume for simplicity consistent with the previous logic (which didn't really enforce it on chain read, but we should adding a mapping).
-        // Actually, public view functions are open to all unless restricted. 
-        // The prompt asked for "sections so that verifier would check if document is verified".
-        // Let's keep it standard: msg.sender grants consent to _verifier.
-        // BUT wait, standard ABI in App.jsx was `function grantConsent(address)`. 
-        // Let's implement that: grant consent to a viewer.
-        // Or if it meant "grant consent for MY data to be seen", usually that's specific.
-        
-        // For the sake of the demo, we'll just emit an event or toggle a boolean.
-        // The simplest match for `grantConsent(address)` is granting consent *to* an address or *for* a specific purpose.
-        // Let's assume it means "authorize this viewer".
-        // HOWEVER, `verifyCredential(address, uint)` is a view function. You can't restrict view functions on-chain effectively (data is public).
-        // So this is likely a signaling function.
+        hasConsent[msg.sender][_verifier] = true;
+        emit ConsentGranted(msg.sender, _verifier);
+    }
+
+    function revokeConsent(address _verifier) external {
+        hasConsent[msg.sender][_verifier] = false;
+        emit ConsentRevoked(msg.sender, _verifier);
     }
 
     function getCredentialCount(address _user) external view returns (uint256) {

@@ -11,9 +11,16 @@ const CONTRACT_ABI = [
   "function registerInstitution(address,string)",
   "function issueCredential(address,bytes32)",
   "function grantConsent(address)",
+  "function revokeConsent(address)",
+  "function hasConsent(address,address) view returns (bool)",
   "function getCredentialCount(address) view returns (uint256)",
   "function verifyCredential(address,uint256) view returns (bytes32,string,address,bool)"
 ];
+
+const formatHash = (str) => {
+  if (!str) return str;
+  return str.slice(0, 6) + "...";
+};
 
 function App() {
   const [wallet, setWallet] = useState("");
@@ -35,6 +42,7 @@ function App() {
   // Verification
   const [verifyAddress, setVerifyAddress] = useState("");
   const [allCredentials, setAllCredentials] = useState([]);
+  const [institutionFilter, setInstitutionFilter] = useState("");
 
   // Consent
   const [targetVerifierAddress, setTargetVerifierAddress] = useState("");
@@ -268,6 +276,38 @@ function App() {
     }
   };
 
+  const revokeConsent = async () => {
+    try {
+      if (!contract) {
+        setStatus("Please connect wallet first");
+        setStatusType("error");
+        return;
+      }
+
+      if (!ethers.isAddress(targetVerifierAddress)) {
+        setStatus("Invalid verifier address format");
+        setStatusType("error");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("Revoking consent...");
+      setStatusType("info");
+      const tx = await contract.revokeConsent(targetVerifierAddress);
+      const receipt = await tx.wait();
+
+      setStatus(`Consent revoked successfully! (Tx: ${receipt.hash.substring(0, 10)}...)`);
+      setStatusType("success");
+      setTargetVerifierAddress("");
+    } catch (err) {
+      console.error(err);
+      setStatus(`Revoke failed: ${err.reason || err.message}`);
+      setStatusType("error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // -----------------------
   // VERIFY CREDENTIALS
   // -----------------------
@@ -284,6 +324,21 @@ function App() {
         setStatus("Invalid address to verify");
         setStatusType("error");
         return;
+      }
+
+      console.log("Verifying as:", wallet);
+
+      if (targetAddr.toLowerCase() === wallet.toLowerCase()) {
+        setStatus("You are verifying your own credentials");
+        setStatusType("info");
+      } else {
+        const consent = await contract.hasConsent(targetAddr, wallet);
+        console.log("Consent:", consent);
+        if (!consent) {
+          setStatus("No consent from user");
+          setStatusType("error");
+          return;
+        }
       }
 
       setLoading(true);
@@ -306,27 +361,62 @@ function App() {
         try {
           const data = await contract.verifyCredential(targetAddr, i);
           const hash = data[0];
+          const instName = data[1];
+          const issuer = data[2];
+          const valid = data[3];
+
+          // Check 1: revoked?
+          let trustStatus = "";
+          if (!valid) {
+            trustStatus = "revoked";
+          } else {
+            // Check 2: is the issuing institution still registered?
+            const inst = await contract.institutions(issuer);
+            const instRegistered = inst[1]; // institutions(address) returns (string name, bool isRegistered)
+            console.log(`Cred ${i} — issuer:`, issuer, "institution registered:", instRegistered);
+            if (!instRegistered) {
+              trustStatus = "untrusted";
+            } else {
+              trustStatus = "valid";
+            }
+          }
 
           // Fetch metadata from backend
-          let metadata = {};
+          let metadata = null;
           try {
             const res = await fetch(`http://localhost:3001/api/credentials/${hash}`);
             if (res.ok) {
-              const row = await res.json();
-              metadata = row;
+              metadata = await res.json();
             }
-          } catch (apiErr) {
-            console.warn("Failed to fetch metadata", apiErr);
+          } catch (err) {
+            console.warn("Metadata fetch failed", err);
+          }
+
+          // 🔐 Verify name using hash
+          let displayName = "Unknown";
+          let hashVerified = false;
+
+          if (metadata && metadata.credential_name) {
+            const recomputedHash = ethers.keccak256(
+              ethers.toUtf8Bytes(metadata.credential_name)
+            );
+            if (recomputedHash === hash) {
+              displayName = metadata.credential_name;
+              hashVerified = true;
+            } else {
+              displayName = "⚠ Tampered Data";
+            }
           }
 
           creds.push({
             index: i,
             hash: hash,
-            institution: data[1],
-            issuer: data[2],
-            valid: data[3],
-            name: metadata.credential_name || "Unknown",
-            dbData: metadata.data
+            institution: instName,
+            issuer: issuer,
+            valid: valid,
+            trustStatus: trustStatus, // "valid" | "revoked" | "untrusted"
+            name: displayName,
+            hashVerified: hashVerified,
           });
         } catch (e) {
           console.error(`Failed to fetch cred ${i}`, e);
@@ -558,13 +648,24 @@ function App() {
                 />
               </div>
 
-              <button
-                onClick={grantConsent}
-                disabled={loading || !targetVerifierAddress}
-                className="primary"
-              >
-                {loading ? "Granting..." : "Grant Consent"}
-              </button>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button
+                  onClick={grantConsent}
+                  disabled={loading || !targetVerifierAddress}
+                  className="primary"
+                  style={{ flex: 1 }}
+                >
+                  {loading ? "Processing..." : "Grant Consent"}
+                </button>
+                <button
+                  onClick={revokeConsent}
+                  disabled={loading || !targetVerifierAddress}
+                  className="secondary"
+                  style={{ flex: 1 }}
+                >
+                  {loading ? "Processing..." : "Revoke Consent"}
+                </button>
+              </div>
             </div>
 
             <div className="card">
@@ -632,20 +733,30 @@ function App() {
                     </div>
                     <div className="credential-detail">
                       <span className="label">Issuer Address:</span>
-                      <code className="code-block">{cred.issuer}</code>
+                      <code className="code-block">{formatHash(cred.issuer)}</code>
                     </div>
                     <div className="credential-detail">
                       <span className="label">Credential Hash:</span>
-                      <code className="code-block">{cred.hash}</code>
+                      <code className="code-block">{formatHash(cred.hash)}</code>
                     </div>
                     <div className="credential-detail">
                       <span className="label">Credential Name:</span>
-                      <p style={{ fontWeight: "bold", color: "#e2e8f0" }}>{cred.name}</p>
+                      <p style={{
+                        fontWeight: "bold",
+                        color: cred.hashVerified ? "#22c55e" : "#ef4444"
+                      }}>
+                        {cred.name}
+                        {cred.hashVerified && <span style={{ fontSize: "0.75rem", marginLeft: "0.5rem", opacity: 0.8 }}>✓ Hash Verified</span>}
+                      </p>
                     </div>
                     <div className="credential-detail">
                       <span className="label">Status:</span>
-                      <div className={`status-badge ${cred.valid ? "success" : "error"}`}>
-                        {cred.valid ? "✓ Valid" : "✗ Invalid"}
+                      <div className={`status-badge ${cred.trustStatus === "valid" ? "success" :
+                        cred.trustStatus === "untrusted" ? "warning" : "error"
+                        }`}>
+                        {cred.trustStatus === "valid" && "✓ Valid"}
+                        {cred.trustStatus === "revoked" && "✗ Revoked"}
+                        {cred.trustStatus === "untrusted" && "⚠ Untrusted Institution"}
                       </div>
                     </div>
                   </div>

@@ -83,6 +83,19 @@ app.get('/api/user/:address', (req, res) => {
     });
 });
 
+// Get All Credentials issued by an Institution
+app.get('/api/institution/:address', (req, res) => {
+    const { address } = req.params;
+    const sql = `SELECT hash, recipient_address, institution_address, credential_name, created_at FROM credentials WHERE institution_address = ?`;
+
+    db.all(sql, [address], (err, rows) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        res.json(rows);
+    });
+});
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
