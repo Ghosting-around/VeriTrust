@@ -1,789 +1,97 @@
-import { useEffect, useState } from "react";
-import { ethers } from "ethers";
-import { BrowserMultiFormatReader } from "@zxing/browser";
-import "./app.css";
-
-const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
-
-const CONTRACT_ABI = [
-  "function admin() view returns (address)",
-  "function institutions(address) view returns (string,bool)",
-  "function registerInstitution(address,string)",
-  "function issueCredential(address,bytes32)",
-  "function grantConsent(address)",
-  "function revokeConsent(address)",
-  "function hasConsent(address,address) view returns (bool)",
-  "function getCredentialCount(address) view returns (uint256)",
-  "function verifyCredential(address,uint256) view returns (bytes32,string,address,bool)"
-];
-
-const formatHash = (str) => {
-  if (!str) return str;
-  return str.slice(0, 6) + "...";
-};
+import React, { useState, useEffect } from 'react';
+import Navbar from './components/Navbar';
+import StatusMessage from './components/StatusMessage';
+import Landing from './pages/Landing';
+import InstitutionDashboard from './pages/InstitutionDashboard';
+import UserDashboard from './pages/UserDashboard';
+import VerifierDashboard from './pages/VerifierDashboard';
+import { connectWalletService } from './services/contractService';
+import './app.css';
 
 function App() {
-  const [wallet, setWallet] = useState("");
-  const [status, setStatus] = useState("");
-  const [statusType, setStatusType] = useState(""); // 'success', 'error', 'info'
+  const [wallet, setWallet] = useState(null);
   const [provider, setProvider] = useState(null);
   const [contract, setContract] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [chainId, setChainId] = useState(null);
+  const [userRole, setUserRole] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const [statusType, setStatusType] = useState("info");
+  const [initialVerifierAddress, setInitialVerifierAddress] = useState("");
 
-  // Institution Registration
-  const [instAddress, setInstAddress] = useState("");
-  const [instName, setInstName] = useState("");
+  const showMessage = (msg, type = "info") => {
+    setStatus(msg);
+    setStatusType(type);
+  };
 
-  // Issue Credential
-  const [credentialRecipient, setCredentialRecipient] = useState("");
-  const [credentialName, setCredentialName] = useState("");
-
-  // Verification
-  const [verifyAddress, setVerifyAddress] = useState("");
-  const [allCredentials, setAllCredentials] = useState([]);
-  const [institutionFilter, setInstitutionFilter] = useState("");
-
-  // Consent
-  const [targetVerifierAddress, setTargetVerifierAddress] = useState("");
-
-  // Role State
-  const [userRole, setUserRole] = useState(null); // 'institution', 'user', 'verifier'
-
-  // Load params on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const addr = params.get("address");
-    if (addr && ethers.isAddress(addr)) {
+    if (addr) {
       setUserRole("verifier");
-      setVerifyAddress(addr);
-      // We can't fetch immediately without wallet connection usually, 
-      // but if we had a public provider we could. 
-      // For now, we'll just set the address and let them connect.
+      setInitialVerifierAddress(addr);
     }
   }, []);
 
-  const copyShareLink = () => {
-    if (!wallet) return;
-    const url = `${window.location.origin}?address=${wallet}`;
-    navigator.clipboard.writeText(url);
-    setStatus("Link copied to clipboard!");
-    setStatusType("success");
-    setTimeout(() => setStatus(""), 3000);
-  };
-
-  const resetRole = () => {
-    setUserRole(null);
-    setVerifyAddress("");
-    setStatus("");
-  };
-
-  // -----------------------
-  // CONNECT WALLET
-  // -----------------------
   const connectWallet = async () => {
     try {
       setLoading(true);
-      if (!window.ethereum) {
-        setStatus("MetaMask not installed. Please install MetaMask.");
-        setStatusType("error");
-        setLoading(false);
-        return;
-      }
+      const { provider: p, contract: c, address: a, chainId: cid } = await connectWalletService();
+      setProvider(p);
+      setContract(c);
+      setWallet(a);
+      setChainId(cid);
+      showMessage(`Wallet connected: ${a.slice(0,6)}...${a.slice(-4)}`, "success");
+    } catch (err) {
+      showMessage(`Connection failed: ${err.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      // Request to switch to Sepolia network
-      try {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0xaa36a7" }], // Sepolia
-        });
-      } catch (switchError) {
-        if (switchError.code === 4902) {
-          setStatus("Sepolia network not found. Please add it to MetaMask.");
-          setStatusType("error");
-          setLoading(false);
-          return;
-        }
-        throw switchError;
-      }
-
-      const prov = new ethers.BrowserProvider(window.ethereum);
-      const net = await prov.getNetwork();
-      setChainId(net.chainId);
-
-      const signer = await prov.getSigner();
-      const addr = await signer.getAddress();
-
-      const ctr = new ethers.Contract(
-        CONTRACT_ADDRESS,
-        CONTRACT_ABI,
-        signer
+  const renderContent = () => {
+    if (!userRole) {
+      return <Landing setUserRole={setUserRole} />;
+    }
+    if (!wallet) {
+      return (
+        <div style={{ textAlign: 'center', marginTop: '10vh' }}>
+          <h2 style={{ color: '#e2e8f0', marginBottom: '1rem' }}>Wallet Connection Required</h2>
+          <p style={{ color: '#94a3b8', fontSize: '1.1rem' }}>Please connect your MetaMask wallet using the top navigation bar to securely access the <strong>{userRole.charAt(0).toUpperCase() + userRole.slice(1)} Dashboard</strong>.</p>
+        </div>
       );
-
-      setWallet(addr);
-      setProvider(prov);
-      setContract(ctr);
-      setStatus(`Wallet connected successfully! (${addr.substring(0, 6)}...${addr.substring(38)})`);
-      setStatusType("success");
-    } catch (err) {
-      console.error(err);
-      setStatus(`Connection failed: ${err.message}`);
-      setStatusType("error");
-    } finally {
-      setLoading(false);
     }
-  };
-
-  // -----------------------
-  // REGISTER INSTITUTION (ADMIN ONLY)
-  // -----------------------
-  const registerInstitution = async () => {
-    try {
-      if (!contract) return;
-      if (!instAddress || !instName) {
-        setStatus("Please fill in institution address and name");
-        setStatusType("error");
-        return;
-      }
-      if (!ethers.isAddress(instAddress)) {
-        setStatus("Invalid institution address");
-        setStatusType("error");
-        return;
-      }
-
-      setLoading(true);
-      setStatus("Registering institution...");
-      setStatusType("info");
-
-      const tx = await contract.registerInstitution(instAddress, instName);
-      await tx.wait();
-
-      setStatus(`Institution registered: ${instName}`);
-      setStatusType("success");
-      setInstAddress("");
-      setInstName("");
-    } catch (err) {
-      console.error(err);
-      setStatus(`Registration failed: ${err.reason || err.message}`);
-      setStatusType("error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // -----------------------
-  // ISSUE CREDENTIAL (INSTITUTION ONLY)
-  // -----------------------
-  const issueCredential = async () => {
-    try {
-      if (!contract) {
-        setStatus("Please connect wallet first");
-        setStatusType("error");
-        return;
-      }
-
-      const inst = await contract.institutions(wallet);
-      if (!inst[1]) {
-        setStatus("Access denied: Not a registered institution");
-        setStatusType("error");
-        return;
-      }
-
-      if (!credentialRecipient || !credentialName) {
-        setStatus("Please fill in all required fields");
-        setStatusType("error");
-        return;
-      }
-
-      // Validate address format
-      if (!ethers.isAddress(credentialRecipient)) {
-        setStatus("Invalid recipient address format");
-        setStatusType("error");
-        return;
-      }
-
-      setLoading(true);
-      const hash = ethers.keccak256(ethers.toUtf8Bytes(credentialName));
-
-      setStatus("Issuing credential...");
-      setStatusType("info");
-      const tx = await contract.issueCredential(credentialRecipient, hash);
-      const receipt = await tx.wait();
-
-      // Save metadata to backend
-      try {
-        await fetch('http://localhost:3001/api/credentials', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            hash: hash,
-            recipient: credentialRecipient,
-            institution: wallet, // The signer is the institution
-            name: credentialName,
-            data: { issuedAt: new Date().toISOString() } // simplified data for now
-          })
-        });
-      } catch (apiErr) {
-        console.error("Backend save failed", apiErr);
-        // We don't fail the UI flow because on-chain succeeded
-      }
-
-      setStatus(`Credential issued successfully! (Tx: ${receipt.hash.substring(0, 10)}...)`);
-      setStatusType("success");
-      setCredentialRecipient("");
-      setCredentialName("");
-    } catch (err) {
-      console.error(err);
-      setStatus(`Issuance failed: ${err.reason || err.message}`);
-      setStatusType("error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // -----------------------
-  // GRANT CONSENT
-  // -----------------------
-  const grantConsent = async () => {
-    try {
-      if (!contract) {
-        setStatus("Please connect wallet first");
-        setStatusType("error");
-        return;
-      }
-
-      if (!ethers.isAddress(targetVerifierAddress)) {
-        setStatus("Invalid verifier address format");
-        setStatusType("error");
-        return;
-      }
-
-      setLoading(true);
-      setStatus("Granting consent...");
-      setStatusType("info");
-      const tx = await contract.grantConsent(targetVerifierAddress);
-      const receipt = await tx.wait();
-
-      setStatus(`Consent granted successfully! (Tx: ${receipt.hash.substring(0, 10)}...)`);
-      setStatusType("success");
-      setTargetVerifierAddress("");
-    } catch (err) {
-      console.error(err);
-      setStatus(`Consent failed: ${err.reason || err.message}`);
-      setStatusType("error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const revokeConsent = async () => {
-    try {
-      if (!contract) {
-        setStatus("Please connect wallet first");
-        setStatusType("error");
-        return;
-      }
-
-      if (!ethers.isAddress(targetVerifierAddress)) {
-        setStatus("Invalid verifier address format");
-        setStatusType("error");
-        return;
-      }
-
-      setLoading(true);
-      setStatus("Revoking consent...");
-      setStatusType("info");
-      const tx = await contract.revokeConsent(targetVerifierAddress);
-      const receipt = await tx.wait();
-
-      setStatus(`Consent revoked successfully! (Tx: ${receipt.hash.substring(0, 10)}...)`);
-      setStatusType("success");
-      setTargetVerifierAddress("");
-    } catch (err) {
-      console.error(err);
-      setStatus(`Revoke failed: ${err.reason || err.message}`);
-      setStatusType("error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // -----------------------
-  // VERIFY CREDENTIALS
-  // -----------------------
-  const fetchUserCredentials = async () => {
-    try {
-      if (!contract) {
-        setStatus("Please connect wallet first");
-        setStatusType("error");
-        return;
-      }
-
-      const targetAddr = verifyAddress || wallet;
-      if (!ethers.isAddress(targetAddr)) {
-        setStatus("Invalid address to verify");
-        setStatusType("error");
-        return;
-      }
-
-      console.log("Verifying as:", wallet);
-
-      if (targetAddr.toLowerCase() === wallet.toLowerCase()) {
-        setStatus("You are verifying your own credentials");
-        setStatusType("info");
-      } else {
-        const consent = await contract.hasConsent(targetAddr, wallet);
-        console.log("Consent:", consent);
-        if (!consent) {
-          setStatus("No consent from user");
-          setStatusType("error");
-          return;
-        }
-      }
-
-      setLoading(true);
-      setStatus(`Fetching credentials for ${targetAddr.substring(0, 6)}...`);
-      setStatusType("info");
-      setAllCredentials([]);
-
-      const count = await contract.getCredentialCount(targetAddr);
-      const countNum = Number(count);
-
-      if (countNum === 0) {
-        setStatus("No credentials found for this address");
-        setStatusType("info");
-        setLoading(false);
-        return;
-      }
-
-      const creds = [];
-      for (let i = 0; i < countNum; i++) {
-        try {
-          const data = await contract.verifyCredential(targetAddr, i);
-          const hash = data[0];
-          const instName = data[1];
-          const issuer = data[2];
-          const valid = data[3];
-
-          // Check 1: revoked?
-          let trustStatus = "";
-          if (!valid) {
-            trustStatus = "revoked";
-          } else {
-            // Check 2: is the issuing institution still registered?
-            const inst = await contract.institutions(issuer);
-            const instRegistered = inst[1]; // institutions(address) returns (string name, bool isRegistered)
-            console.log(`Cred ${i} — issuer:`, issuer, "institution registered:", instRegistered);
-            if (!instRegistered) {
-              trustStatus = "untrusted";
-            } else {
-              trustStatus = "valid";
-            }
-          }
-
-          // Fetch metadata from backend
-          let metadata = null;
-          try {
-            const res = await fetch(`http://localhost:3001/api/credentials/${hash}`);
-            if (res.ok) {
-              metadata = await res.json();
-            }
-          } catch (err) {
-            console.warn("Metadata fetch failed", err);
-          }
-
-          // 🔐 Verify name using hash
-          let displayName = "Unknown";
-          let hashVerified = false;
-
-          if (metadata && metadata.credential_name) {
-            const recomputedHash = ethers.keccak256(
-              ethers.toUtf8Bytes(metadata.credential_name)
-            );
-            if (recomputedHash === hash) {
-              displayName = metadata.credential_name;
-              hashVerified = true;
-            } else {
-              displayName = "⚠ Tampered Data";
-            }
-          }
-
-          creds.push({
-            index: i,
-            hash: hash,
-            institution: instName,
-            issuer: issuer,
-            valid: valid,
-            trustStatus: trustStatus, // "valid" | "revoked" | "untrusted"
-            name: displayName,
-            hashVerified: hashVerified,
-          });
-        } catch (e) {
-          console.error(`Failed to fetch cred ${i}`, e);
-        }
-      }
-
-      setAllCredentials(creds);
-      setStatus(`Found ${creds.length} credential(s)`);
-      setStatusType("success");
-    } catch (err) {
-      console.error(err);
-      setStatus(`Verification failed: ${err.reason || err.message}`);
-      setStatusType("error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // -----------------------
-  // IMAGE UPLOAD (BARCODE/QR)
-  // -----------------------
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setLoading(true);
-    setStatus("Scanning image...");
-    setStatusType("info");
-
-    try {
-      const reader = new BrowserMultiFormatReader();
-      // Read the file as an Object URL to pass it to the decoder
-      const imageUrl = URL.createObjectURL(file);
-
-      const result = await reader.decodeFromImageUrl(imageUrl);
-      const scannedText = result.getText();
-
-      if (ethers.isAddress(scannedText)) {
-        setVerifyAddress(scannedText);
-        setStatus("Address scanned successfully! You can now verify credentials.");
-        setStatusType("success");
-      } else {
-        setStatus("The scanned code does not contain a valid Ethereum address.");
-        setStatusType("error");
-      }
-
-      // Revoke the object URL to free memory
-      URL.revokeObjectURL(imageUrl);
-    } catch (err) {
-      console.error("Scanning Error:", err);
-      // zxing throws an error specifically if no barcode is found
-      if (err.name === 'NotFoundException' || err.message.includes("No MultiFormat Readers")) {
-        setStatus("No barcode or QR code found in the image.");
-      } else {
-        setStatus("Failed to scan image. Ensure it's a clear barcode/QR code.");
-      }
-      setStatusType("error");
-    } finally {
-      setLoading(false);
-      // Reset the file input so the same file could be selected again
-      e.target.value = null;
+    switch (userRole) {
+      case 'institution':
+        return <InstitutionDashboard contract={contract} wallet={wallet} showMessage={showMessage} />;
+      case 'user':
+        return <UserDashboard contract={contract} wallet={wallet} showMessage={showMessage} />;
+      case 'verifier':
+        return <VerifierDashboard contract={contract} wallet={wallet} showMessage={showMessage} initialAddress={initialVerifierAddress} />;
+      default:
+        return <Landing setUserRole={setUserRole} />;
     }
   };
 
   return (
-    <div className="app-wrapper">
-      <div className="app-container">
-        {/* ========== HEADER ========== */}
-        <div className="header">
-          <h1>🔐 VeriTrust</h1>
-          <p className="tagline">Decentralized Credential Verification</p>
-        </div>
+    <div className="app-wrapper" style={{ padding: 0, flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+      <Navbar 
+        wallet={wallet} 
+        chainId={chainId} 
+        loading={loading} 
+        connectWallet={connectWallet} 
+        userRole={userRole} 
+        resetRole={() => setUserRole(null)} 
+      />
+      
+      <div className="app-container" style={{ marginTop: '2rem', padding: '0 1.5rem', width: '100%', maxWidth: '800px' }}>
+        {renderContent()}
+      </div>
 
-        {/* ========== WALLET CONNECTION ========== */}
-        <div className="card wallet-card">
-          <h2>Wallet Connection</h2>
-          <div className="wallet-info">
-            {wallet ? (
-              <>
-                <div className="status-badge success">✓ Connected</div>
-                <p className="wallet-address">
-                  <span className="label">Address:</span>
-                  <code>{wallet}</code>
-                </p>
-                <p className="wallet-details">
-                  <span className="label">Chain ID:</span> {chainId || "Loading..."}
-                </p>
-              </>
-            ) : (
-              <>
-                <div className="status-badge disconnected">⚠ Not Connected</div>
-                <p style={{ fontSize: "0.9rem", color: "#94a3b8" }}>
-                  Connect your MetaMask wallet to Sepolia network to get started.
-                </p>
-              </>
-            )}
-          </div>
-          <button
-            onClick={connectWallet}
-            disabled={loading}
-            className={wallet ? "secondary" : "primary"}
-          >
-            {loading ? "Connecting..." : wallet ? "Reconnect Wallet" : "Connect MetaMask Wallet"}
-          </button>
-        </div>
-
-        {/* ========== ROLE SELECTION (LANDING) ========== */}
-        {!userRole && (
-          <div className="role-selection">
-            <div className="card role-card" onClick={() => setUserRole("institution")}>
-              <h2>🏛 Institution</h2>
-              <p>Register as an institution and issue credentials.</p>
-            </div>
-
-            <div className="card role-card" onClick={() => setUserRole("user")}>
-              <h2>👤 User</h2>
-              <p>View your credentials and generate shareable links.</p>
-            </div>
-
-            <div className="card role-card" onClick={() => setUserRole("verifier")}>
-              <h2>🔍 Verifier</h2>
-              <p>Verify credentials for a specific wallet address.</p>
-            </div>
-          </div>
-        )}
-
-        {/* ========== BACK BUTTON ========== */}
-        {userRole && (
-          <button onClick={resetRole} className="back-button">
-            &larr; Back to Role Selection
-          </button>
-        )}
-
-        {/* ========== INSTITUTION VIEW ========== */}
-        {userRole === "institution" && wallet && (
-          <>
-            <div className="card">
-              <h2>Register Institution</h2>
-              <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1rem" }}>
-                Authorize a new institution to issue credentials. (Admin Only)
-              </p>
-              <div className="form-group">
-                <label>Institution Address</label>
-                <input
-                  type="text"
-                  placeholder="0x..."
-                  value={instAddress}
-                  onChange={(e) => setInstAddress(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-              <div className="form-group">
-                <label>Institution Name</label>
-                <input
-                  type="text"
-                  placeholder="e.g. University of Blockchain"
-                  value={instName}
-                  onChange={(e) => setInstName(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-              <button
-                onClick={registerInstitution}
-                disabled={loading || !instAddress || !instName}
-                className="primary"
-              >
-                Register Institution
-              </button>
-            </div>
-
-            <div className="card">
-              <h2>Issue New Credential</h2>
-              <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1rem" }}>
-                Create and issue a credential to a user.
-              </p>
-
-              <div className="form-group">
-                <label htmlFor="recipient">Recipient Address</label>
-                <input
-                  id="recipient"
-                  type="text"
-                  placeholder="0x..."
-                  value={credentialRecipient}
-                  onChange={(e) => setCredentialRecipient(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="credName">Credential Name/ID</label>
-                <input
-                  id="credName"
-                  type="text"
-                  placeholder="e.g., VeriTrust-Degree-2026"
-                  value={credentialName}
-                  onChange={(e) => setCredentialName(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-
-              <button
-                onClick={issueCredential}
-                disabled={loading || !credentialRecipient || !credentialName}
-                className="primary"
-              >
-                {loading ? "Issuing..." : "Issue Credential"}
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* ========== USER VIEW ========== */}
-        {userRole === "user" && wallet && (
-          <>
-            <div className="card">
-              <h2>Privacy & Consent</h2>
-              <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1rem" }}>
-                Grant consent for a specific verifier to view your credentials.
-              </p>
-
-              <div className="form-group">
-                <label>Verifier Address</label>
-                <input
-                  type="text"
-                  placeholder="Enter verifier wallet address"
-                  value={targetVerifierAddress}
-                  onChange={(e) => setTargetVerifierAddress(e.target.value)}
-                  className="input-field"
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '1rem' }}>
-                <button
-                  onClick={grantConsent}
-                  disabled={loading || !targetVerifierAddress}
-                  className="primary"
-                  style={{ flex: 1 }}
-                >
-                  {loading ? "Processing..." : "Grant Consent"}
-                </button>
-                <button
-                  onClick={revokeConsent}
-                  disabled={loading || !targetVerifierAddress}
-                  className="secondary"
-                  style={{ flex: 1 }}
-                >
-                  {loading ? "Processing..." : "Revoke Consent"}
-                </button>
-              </div>
-            </div>
-
-            <div className="card">
-              <h2>Share Verification Link</h2>
-              <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1rem" }}>
-                Generate a link to share your verified credentials with others.
-              </p>
-              <button onClick={copyShareLink} className="secondary">
-                🔗 Copy Share Link
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* ========== VERIFIER VIEW ========== */}
-        {userRole === "verifier" && wallet && (
-          <div className="card">
-            <h2>Verify Credentials</h2>
-            <p style={{ fontSize: "0.9rem", color: "#94a3b8", marginBottom: "1rem" }}>
-              Check credentials for any user (requires consent).
-            </p>
-
-            <div className="form-group">
-              <label>Wallet Address</label>
-              <input
-                type="text"
-                placeholder="Enter wallet address"
-                value={verifyAddress}
-                onChange={(e) => setVerifyAddress(e.target.value)}
-                className="input-field"
-              />
-            </div>
-
-            <div className="form-group" style={{ marginTop: '1rem', marginBottom: '1.5rem', borderTop: '1px solid #334155', paddingTop: '1rem' }}>
-              <label htmlFor="qr-upload" style={{ display: 'block', marginBottom: '0.5rem' }}>
-                Or Upload QR Code/Barcode Image
-              </label>
-              <input
-                id="qr-upload"
-                type="file"
-                accept="image/*"
-                onChange={handleImageUpload}
-                disabled={loading}
-                className="input-field"
-                style={{ padding: '0.5rem', background: '#1e293b' }}
-              />
-            </div>
-
-            <button
-              onClick={fetchUserCredentials}
-              disabled={loading}
-              className="primary"
-            >
-              {loading ? "Verifying..." : "Verify Credentials"}
-            </button>
-
-            {/* RESULTS */}
-            {allCredentials.length > 0 && (
-              <div className="credentials-grid">
-                {allCredentials.map((cred, idx) => (
-                  <div key={idx} className="credential-card">
-                    <div className="credential-detail">
-                      <span className="label">Institution:</span>
-                      <p>{cred.institution || "Unknown"}</p>
-                    </div>
-                    <div className="credential-detail">
-                      <span className="label">Issuer Address:</span>
-                      <code className="code-block">{formatHash(cred.issuer)}</code>
-                    </div>
-                    <div className="credential-detail">
-                      <span className="label">Credential Hash:</span>
-                      <code className="code-block">{formatHash(cred.hash)}</code>
-                    </div>
-                    <div className="credential-detail">
-                      <span className="label">Credential Name:</span>
-                      <p style={{
-                        fontWeight: "bold",
-                        color: cred.hashVerified ? "#22c55e" : "#ef4444"
-                      }}>
-                        {cred.name}
-                        {cred.hashVerified && <span style={{ fontSize: "0.75rem", marginLeft: "0.5rem", opacity: 0.8 }}>✓ Hash Verified</span>}
-                      </p>
-                    </div>
-                    <div className="credential-detail">
-                      <span className="label">Status:</span>
-                      <div className={`status-badge ${cred.trustStatus === "valid" ? "success" :
-                        cred.trustStatus === "untrusted" ? "warning" : "error"
-                        }`}>
-                        {cred.trustStatus === "valid" && "✓ Valid"}
-                        {cred.trustStatus === "revoked" && "✗ Revoked"}
-                        {cred.trustStatus === "untrusted" && "⚠ Untrusted Institution"}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {allCredentials.length === 0 && !loading && statusType === 'success' && (
-              <div className="no-creds">No credentials found for this address.</div>
-            )}
-          </div>
-        )}
-
-        {/* ========== STATUS MESSAGE ========== */}
-        {status && (
-          <div className={`status ${statusType}`}>
-            <p>{status}</p>
-          </div>
-        )}
-
-        {/* ========== FOOTER INFO ========== */}
-        <div className="footer-info">
-          <p>🔒 Secure | 🔗 Decentralized | ✓ Verified</p>
-          <p style={{ fontSize: "0.8rem", color: "#64748b", marginTop: "0.5rem" }}>
-            Contract: {CONTRACT_ADDRESS ? `${CONTRACT_ADDRESS.substring(0, 10)}...` : "Not configured"}
-          </p>
-        </div>
+      <StatusMessage status={status} statusType={statusType} clearStatus={() => setStatus("")} />
+      
+      <div className="footer-info">
+        <p>🔒 Secure | 🔗 Decentralized | ✓ Verified</p>
       </div>
     </div>
   );
